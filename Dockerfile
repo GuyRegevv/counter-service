@@ -35,7 +35,7 @@ EXPOSE 8080
 
 ENV PORT=8080
 ENV COUNTER_FILE=/data/counter.json
-ENV LOG_LEVEL=INFO
+ENV LOG_LEVEL=INFOd
 
 # Use gunicorn for production instead of Flask's dev server
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--access-logfile", "-", "app:app"]

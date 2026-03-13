@@ -1,0 +1,5 @@
+apiVersion: v2
+name: counter-service
+description: A lightweight HTTP counter service
+version: 0.1.0
+appVersion: "0.1.0"

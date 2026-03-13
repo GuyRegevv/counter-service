@@ -1,0 +1,55 @@
+namespace: prod
+
+image:
+  repository: "" # Set by CI/CD pipeline (ECR URL)
+  tag: "latest"
+  pullPolicy: Always
+
+replicaCount: 2
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 8080
+
+container:
+  port: 8080
+  env:
+    PORT: "8080"
+    COUNTER_FILE: "/data/counter.json"
+    LOG_LEVEL: "INFO"
+    APP_VERSION: "0.1.0"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: gp2
+  mountPath: /data
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilization: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 5
+    periodSeconds: 10

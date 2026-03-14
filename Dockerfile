@@ -24,9 +24,6 @@ COPY --from=builder /install /usr/local
 # Copy application code
 COPY app.py .
 
-# Create the data directory for counter persistence and give ownership to appuser
-RUN mkdir -p /data && chown appuser:appuser /data
-
 # Switch to non-root user
 USER appuser
 
@@ -34,7 +31,6 @@ USER appuser
 EXPOSE 8080
 
 ENV PORT=8080
-ENV COUNTER_FILE=/data/counter.json
 ENV LOG_LEVEL=INFO
 
 # Use gunicorn for production instead of Flask's dev server

@@ -15,6 +15,8 @@ spec:
       labels:
         app: {{ .Release.Name }}-redis
     spec:
+      securityContext:
+        fsGroup: 999
       containers:
         - name: redis
           image: redis:7-alpine
@@ -27,6 +29,15 @@ spec:
             limits:
               cpu: 100m
               memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             exec:
               command: ["redis-cli", "ping"]
@@ -37,6 +48,12 @@ spec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 5
             periodSeconds: 15
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-redis-data
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

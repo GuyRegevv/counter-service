@@ -31,6 +31,9 @@ resources:
 
 persistence:
   enabled: false
+  storageClass: gp3-encrypted
+  size: 1Gi
+  mountPath: /data
 
 autoscaling:
   enabled: true

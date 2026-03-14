@@ -35,8 +35,6 @@ jobs:
 
       - name: Run tests
         run: pytest test_app.py -v
-        env:
-          COUNTER_FILE: /tmp/counter.json
 
       - name: Configure AWS credentials
         if: github.ref == 'refs/heads/main'
@@ -58,7 +56,7 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build --platform linux/amd64 -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker build --platform linux/amd64 -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 

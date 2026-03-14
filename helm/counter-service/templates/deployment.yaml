@@ -16,6 +16,8 @@ spec:
         app: {{ .Release.Name }}
     spec:
       serviceAccountName: {{ .Release.Name }}
+      securityContext:
+              fsGroup: 1000
       # Don't schedule multiple replicas on the same node
       affinity:
         podAntiAffinity:
@@ -63,14 +65,18 @@ spec:
           volumeMounts:
             - name: counter-data
               mountPath: {{ .Values.persistence.mountPath }}
+            - name: tmp
+              mountPath: /tmp
           {{- end }}
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
             readOnlyRootFilesystem: true
-      {{- if .Values.persistence.enabled }}
       volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.persistence.enabled }}
         - name: counter-data
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-data
-      {{- end }}
+        {{- end }}

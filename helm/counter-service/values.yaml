@@ -5,7 +5,7 @@ image:
   tag: "latest"
   pullPolicy: Always
 
-replicaCount: 2
+replicaCount: 1
 
 service:
   type: LoadBalancer
@@ -31,13 +31,13 @@ resources:
 persistence:
   enabled: true
   size: 1Gi
-  storageClass: gp2
+  storageClass: gp3-encrypted
   mountPath: /data
 
 autoscaling:
   enabled: true
-  minReplicas: 2
-  maxReplicas: 5
+  minReplicas: 1
+  maxReplicas: 1
   targetCPUUtilization: 70
 
 pdb:

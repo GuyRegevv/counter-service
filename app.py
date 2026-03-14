@@ -4,16 +4,18 @@ import json
 import logging
 import os
 import sys
-import threading
 
+import redis
 from flask import Flask, jsonify, request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 
 # --- Configuration ---
-COUNTER_FILE = os.environ.get("COUNTER_FILE", "/data/counter.json")
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 PORT = int(os.environ.get("PORT", "8080"))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 APP_VERSION = os.environ.get("APP_VERSION", "0.1.0")
+COUNTER_KEY = "counter"
 
 
 # --- Structured JSON logging ---
@@ -48,61 +50,31 @@ COUNTER_VALUE = Gauge(
 )
 
 
-# --- Counter persistence ---
-# Lock prevents race conditions with concurrent workers
-counter_lock = threading.Lock()
-
-
-def load_counter() -> int:
-    """Load the counter value from the persistence file."""
-    try:
-        with open(COUNTER_FILE, "r") as f:
-            data = json.load(f)
-            value = data.get("counter", 0)
-            logger.info(f"Loaded counter value: {value}")
-            return value
-    except FileNotFoundError:
-        logger.info("No existing counter file found, starting from 0")
-        return 0
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"Corrupted counter file, resetting to 0: {e}")
-        return 0
-
-
-def save_counter(value: int) -> None:
-    """Save the counter value to the persistence file."""
-    try:
-        os.makedirs(os.path.dirname(COUNTER_FILE), exist_ok=True)
-        with open(COUNTER_FILE, "w") as f:
-            json.dump({"counter": value}, f)
-    except OSError as e:
-        logger.error(f"Failed to save counter: {e}")
+# --- Redis connection ---
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 
 # --- Flask application ---
 app = Flask(__name__)
-counter = load_counter()
-COUNTER_VALUE.set(counter)
 
 
 @app.route("/", methods=["GET"])
 def get_counter():
     """Return the current counter value."""
     REQUEST_COUNT.labels(method="GET", endpoint="/", status=200).inc()
-    return f"Our counter is: {counter} "
+    value = int(redis_client.get(COUNTER_KEY) or 0)
+    COUNTER_VALUE.set(value)
+    return f"Our counter is: {value} "
 
 
 @app.route("/", methods=["POST"])
 def increment_counter():
-    """Increment the counter by 1 and persist it."""
-    global counter
-    with counter_lock:
-        counter += 1
-        save_counter(counter)
-        COUNTER_VALUE.set(counter)
+    """Increment the counter by 1."""
+    value = redis_client.incr(COUNTER_KEY)
+    COUNTER_VALUE.set(value)
     REQUEST_COUNT.labels(method="POST", endpoint="/", status=200).inc()
-    logger.info(f"Counter incremented to {counter}")
-    return "Hmm, Plus 1 please..."
+    logger.info(f"Counter incremented to {value}")
+    return "Hmm, Plus 1 please! "
 
 
 @app.route("/healthz", methods=["GET"])
@@ -113,17 +85,13 @@ def health():
 
 @app.route("/readyz", methods=["GET"])
 def ready():
-    """Readiness probe - verifies the data directory is writable."""
+    """Readiness probe - verifies Redis is reachable."""
     try:
-        os.makedirs(os.path.dirname(COUNTER_FILE), exist_ok=True)
-        test_path = os.path.join(os.path.dirname(COUNTER_FILE), ".ready_check")
-        with open(test_path, "w") as f:
-            f.write("ok")
-        os.remove(test_path)
+        redis_client.ping()
         return jsonify({"status": "ready"}), 200
-    except OSError:
-        logger.warning("Readiness check failed - cannot write to data directory")
-        return jsonify({"status": "not ready", "reason": "storage unavailable"}), 503
+    except redis.ConnectionError:
+        logger.warning("Readiness check failed - cannot connect to Redis")
+        return jsonify({"status": "not ready", "reason": "redis unavailable"}), 503
 
 
 @app.route("/metrics", methods=["GET"])

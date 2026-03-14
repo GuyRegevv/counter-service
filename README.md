@@ -202,7 +202,6 @@ The persistence approach evolved during the project.
 - **Private subnets with NAT Gateway** - nodes are in public subnets for simplicity. Production should use private subnets.
 - **Remote Terraform state** - currently local. For teams, use S3 + DynamoDB locking.
 - **AWS OIDC for CI/CD** - the pipeline uses static AWS access keys in GitHub Secrets. In production, I would use AWS OIDC federation so GitHub Actions gets temporary credentials per run, with no long-lived keys to manage or risk leaking.
-- **Sealed Secrets / External Secrets** - for better secret management, audit trails, and rotation.
 - **Canary deployments** - enhance the rolling update strategy with Argo Rollouts for gradual traffic shifts.
 - **Grafana dashboard** - Prometheus metrics are exposed and ready for scraping and visualization.
 - **Distributed tracing** - for a single-service API with one Redis call, tracing adds limited value. In a microservices architecture, OpenTelemetry would help identify cross-service latency bottlenecks.

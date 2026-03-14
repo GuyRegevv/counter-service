@@ -6,8 +6,8 @@ import os
 import sys
 import threading
 
-from flask import Flask, request, jsonify
-from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from flask import Flask, jsonify, request
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 
 # --- Configuration ---
 COUNTER_FILE = os.environ.get("COUNTER_FILE", "/data/counter.json")
@@ -102,7 +102,7 @@ def increment_counter():
         COUNTER_VALUE.set(counter)
     REQUEST_COUNT.labels(method="POST", endpoint="/", status=200).inc()
     logger.info(f"Counter incremented to {counter}")
-    return "Hmm, Plus 1 please "
+    return "Hmm, Plus 1 please..."
 
 
 @app.route("/healthz", methods=["GET"])

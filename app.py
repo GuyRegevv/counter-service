@@ -97,6 +97,8 @@ def ready():
 @app.route("/metrics", methods=["GET"])
 def metrics():
     """Expose Prometheus metrics."""
+    value = int(redis_client.get(COUNTER_KEY) or 0)
+    COUNTER_VALUE.set(value)
     return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
 

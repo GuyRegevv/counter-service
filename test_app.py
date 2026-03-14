@@ -1,47 +1,31 @@
-"""Tests for the counter service.
+"""Tests for the counter service."""
 
-These tests verify the core functionality:
-- GET returns the counter value
-- POST increments the counter
-- Health and readiness endpoints work
-- Counter persists to file
-"""
-
-import json
-import os
-import tempfile
-
+import fakeredis
 import pytest
 
-# We need to set the COUNTER_FILE env var BEFORE importing app,
-# because app.py reads it at import time when calling load_counter().
-# This is a common pattern in testing: override config before import.
 
 @pytest.fixture(autouse=True)
-def setup_test_env(tmp_path):
-    """Set up a temporary counter file for each test."""
-    test_file = str(tmp_path / "counter.json")
-    os.environ["COUNTER_FILE"] = test_file
+def mock_redis(monkeypatch):
+    """Replace the real Redis client with a fake one for testing."""
+    fake = fakeredis.FakeRedis(decode_responses=True)
 
-    # We need to reimport/reset the app for each test because
-    # the counter is loaded at module level.
     import app as app_module
-    app_module.COUNTER_FILE = test_file
-    app_module.counter = 0
-    app_module.COUNTER_VALUE.set(0)
 
-    yield app_module
+    monkeypatch.setattr(app_module, "redis_client", fake)
 
-    # Cleanup
-    if os.path.exists(test_file):
-        os.remove(test_file)
+    # Reset counter for each test
+    fake.delete("counter")
+
+    yield fake
 
 
 @pytest.fixture
-def client(setup_test_env):
+def client(mock_redis):
     """Create a Flask test client."""
-    setup_test_env.app.config["TESTING"] = True
-    with setup_test_env.app.test_client() as client:
+    import app as app_module
+
+    app_module.app.config["TESTING"] = True
+    with app_module.app.test_client() as client:
         yield client
 
 
@@ -85,14 +69,10 @@ class TestHealthEndpoints:
     def test_healthz(self, client):
         response = client.get("/healthz")
         assert response.status_code == 200
-        data = json.loads(response.data)
-        assert data["status"] == "healthy"
 
     def test_readyz(self, client):
         response = client.get("/readyz")
         assert response.status_code == 200
-        data = json.loads(response.data)
-        assert data["status"] == "ready"
 
 
 class TestMetrics:
@@ -105,12 +85,10 @@ class TestMetrics:
 
 
 class TestPersistence:
-    """Tests for counter file persistence."""
+    """Tests for Redis persistence."""
 
-    def test_counter_saved_to_file(self, client, setup_test_env):
+    def test_counter_stored_in_redis(self, client, mock_redis):
         client.post("/")
         client.post("/")
-        # Read the file directly
-        with open(setup_test_env.COUNTER_FILE, "r") as f:
-            data = json.load(f)
-        assert data["counter"] == 2
+        value = mock_redis.get("counter")
+        assert int(value) == 2

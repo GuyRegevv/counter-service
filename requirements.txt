@@ -1,9 +1,11 @@
 # Core
 flask==3.1.1
 gunicorn==23.0.0
+redis==5.2.1
 
 # Observability
 prometheus-client==0.21.1
 
 # Testing
 pytest==8.3.4
+fakeredis==2.26.2

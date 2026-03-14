@@ -17,7 +17,7 @@ spec:
     spec:
       serviceAccountName: {{ .Release.Name }}
       securityContext:
-              fsGroup: 1000
+        fsGroup: 1000
       # Don't schedule multiple replicas on the same node
       affinity:
         podAntiAffinity:
@@ -61,13 +61,13 @@ spec:
               port: {{ .Values.container.port }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
-          {{- if .Values.persistence.enabled }}
           volumeMounts:
-            - name: counter-data
-              mountPath: {{ .Values.persistence.mountPath }}
             - name: tmp
               mountPath: /tmp
-          {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: counter-data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000

@@ -1,25 +1,40 @@
 # Counter Service
 
-A lightweight Python-based HTTP counter service that counts POST requests and returns the current count on GET requests. Built for deployment on Kubernetes (EKS) with a fully automated CI/CD pipeline.
+A lightweight Python-based HTTP counter service deployed on EKS with a fully automated CI/CD pipeline.
+
+**Live URL:** `http://acbb96b269b34451db1e15e097e3aadf-1121395566.eu-west-2.elb.amazonaws.com`
+
+## Architecture
+
+![Architecture](docs/architecture.png)
 
 ## Table of Contents
 
-- [Overview](#overview)
 - [Application](#application)
-- [Docker](#docker)
+- [Containerization](#containerization)
 - [Infrastructure](#infrastructure)
-- [CI/CD](#cicd)
-- [High Availability](#high-availability)
+- [Deployment (Helm)](#deployment-helm)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Persistence — Approach and Trade-offs](#persistence--approach-and-trade-offs)
+- [High Availability and Scaling](#high-availability-and-scaling)
+- [Security](#security)
+- [Observability](#observability)
+- [Quick Start (Local)](#quick-start-local)
 - [Production Considerations](#production-considerations)
-- [Quick Start](#quick-start)
 
 ---
 
-## Overview
-
-This project is a fork of [shainberg/counter-service](https://github.com/shainberg/counter-service), improved with production-readiness in mind: persistence, observability, health checks, security, and configuration management.
-
 ## Application
+
+A fork of [shainberg/counter-service](https://github.com/shainberg/counter-service) with the following improvements:
+
+- Redis-backed persistence (survives pod restarts)
+- Health (`/healthz`) and readiness (`/readyz`) probes for Kubernetes
+- Prometheus metrics endpoint (`/metrics`)
+- Structured JSON logging to stdout
+- Configuration via environment variables
+- Non-root execution on port 8080 (mapped to 80 via K8s Service)
+- 9 automated tests with `pytest`
 
 ### Endpoints
 
@@ -27,198 +42,183 @@ This project is a fork of [shainberg/counter-service](https://github.com/shainbe
 |----------|--------|-------------|
 | `/` | GET | Returns the current counter value |
 | `/` | POST | Increments the counter by 1 |
-| `/healthz` | GET | Liveness probe — is the process alive? |
-| `/readyz` | GET | Readiness probe — is the app ready to serve traffic? |
-| `/metrics` | GET | Prometheus metrics in standard exposition format |
-
-### Improvements over the original
-
-The original service stored the counter in memory and ran with `debug=True` on port 80. The improved version adds:
-
-- **File-based persistence** — the counter is saved to `/data/counter.json` on every POST. When backed by a Kubernetes PersistentVolumeClaim, this survives pod restarts and rescheduling.
-- **Configuration via environment variables** — `PORT`, `COUNTER_FILE`, `LOG_LEVEL`, and `APP_VERSION` are all configurable without code changes. This is the standard pattern in containerized environments, where Kubernetes ConfigMaps and Deployment manifests set env vars per environment.
-- **Port 8080 instead of 80** — port 80 requires root privileges on Linux. Running containers as root is a security anti-pattern. Kubernetes maps external port 80 to internal port 8080 via the Service resource, so end users are unaffected.
-- **Health and readiness endpoints** — Kubernetes uses `/healthz` (liveness probe) to decide whether to restart a pod, and `/readyz` (readiness probe) to decide whether to send traffic to it. The readiness probe verifies the data directory is writable.
-- **Prometheus metrics** — exposes `http_requests_total` (a Counter tracking requests by method/endpoint/status) and `counter_current_value` (a Gauge showing the current count). These can be scraped by Prometheus and visualized in Grafana.
-- **Structured JSON logging** — logs are emitted as JSON to stdout, which log aggregation tools (CloudWatch, Loki, ELK) can parse and index automatically. Plain text logs require custom parsing rules.
-- **Thread-safe counter** — a threading lock protects the counter from race conditions when running under a multi-worker server like gunicorn.
-- **Debug mode disabled** — `debug=True` exposes stack traces and enables a remote debugger, which is a security risk in production.
-- **Pinned dependency versions** — `requirements.txt` pins exact versions to ensure reproducible builds. Without pinning, a new release of a dependency could break the build unexpectedly.
-- **Tests** — 9 tests covering GET, POST, health endpoints, metrics, and persistence. These run in CI to catch regressions before deployment.
+| `/healthz` | GET | Liveness probe |
+| `/readyz` | GET | Readiness probe (checks Redis connectivity) |
+| `/metrics` | GET | Prometheus metrics |
 
 ### Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `COUNTER_FILE` | `/data/counter.json` | Path to the persistence file |
-| `PORT` | `8080` | Port the service listens on |
-| `LOG_LEVEL` | `INFO` | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
-| `APP_VERSION` | `0.1.0` | Version string returned in responses |
+| `REDIS_HOST` | `localhost` | Redis server hostname |
+| `REDIS_PORT` | `6379` | Redis server port |
+| `PORT` | `8080` | Application listen port |
+| `LOG_LEVEL` | `INFO` | Logging verbosity |
+| `APP_VERSION` | `0.1.0` | Version identifier |
 
-### Persistence — approach and trade-offs
+## Containerization
 
-The service persists the counter to a local JSON file. In Kubernetes, this file is stored on a PersistentVolumeClaim (PVC) backed by an encrypted EBS volume (gp3).
+Multi-stage Docker build producing a minimal, secure image (~217MB):
 
-**Why file-based persistence?** It's the simplest approach — no additional infrastructure to provision or maintain. For a single-replica counter service, it works correctly: the counter survives pod restarts, crashes, and rescheduling because the EBS volume is independent of the pod lifecycle.
-
-**Limitation: single replica only.** With file-based persistence, the counter is accurate with one replica and one gunicorn worker. Multiple replicas would each have their own PVC and their own counter, producing inconsistent results. This is a fundamental limitation of local file storage — not a bug, but an architectural trade-off.
-
-**Alternative approaches considered:**
-
-- **Redis** — would allow multiple replicas to share state, enabling true high availability with consistent counting across all pods. Adds operational complexity (another service to deploy, monitor, and secure) and a network dependency on every request. This is the recommended upgrade path if HA is required.
-- **DynamoDB / RDS** — most durable option, survives even if the entire cluster goes down. Overkill for a counter, and adds latency, cost, and infrastructure to manage.
-- **File on EFS (ReadWriteMany)** — would allow multiple replicas to mount the same filesystem. However, concurrent writes from multiple pods to the same file would require file locking to avoid corruption. EFS also has higher latency than EBS and adds cost.
-
-The file-based approach was chosen for simplicity and correctness. The infrastructure and Kubernetes manifests (HPA, PDB, pod anti-affinity) are already in place to support multi-replica scaling — only the persistence layer would need to change to a shared store like Redis.
-
-### High availability
-
-The current deployment runs a single replica with the following HA-supporting infrastructure already in place:
-
-- **HorizontalPodAutoscaler (HPA)** — configured to scale from 1 to 5 pods based on CPU utilization (70% threshold). With the current file-based persistence, scaled pods would each have independent counters. Switching to a shared store (Redis) would make this fully functional.
-- **PodDisruptionBudget (PDB)** — ensures at least 1 pod remains available during voluntary disruptions like node drains and cluster upgrades.
-- **Pod anti-affinity** — configured to prefer scheduling replicas on different nodes, so if the persistence layer is upgraded to support multiple replicas, they will be spread across nodes and AZs automatically.
-- **Multi-AZ infrastructure** — worker nodes are spread across 2 Availability Zones at the Terraform level.
-
-## Docker
-
-### Image design
-
-The service is packaged using a **multi-stage Docker build** to produce a minimal, secure image:
-
-- **Stage 1 (builder)** — installs Python dependencies into an isolated prefix. Build tools and pip caches stay in this stage and are discarded.
-- **Stage 2 (final)** — starts from a clean `python:3.12-slim` base, copies only the installed packages and application code. This keeps the final image around ~170MB instead of ~900MB.
-
-Security measures applied in the image:
-
-- Runs as a non-root user (`appuser`) — limits damage if the application is compromised.
-- Uses `gunicorn` as the production WSGI server instead of Flask's development server, which is not designed for real traffic.
-- Minimal image contents — no build tools, no caches, no test files.
-
-### Build and run
+- **Stage 1 (builder)** — installs dependencies into an isolated prefix.
+- **Stage 2 (final)** — clean `python:3.12-slim` base with only the app and its dependencies.
+- Runs as non-root user (`appuser`).
+- Read-only root filesystem (writable `/tmp` via emptyDir).
+- `gunicorn` as production WSGI server (2 workers).
 
 ```bash
-# Build
-docker build -t counter-service:test .
-
-# Run
-docker run -d --name counter-test -p 8080:8080 counter-service:test
-
-# Verify
-curl http://localhost:8080/
-docker exec counter-test whoami   # should print: appuser
-
-# Clean up
-docker stop counter-test && docker rm counter-test
+docker build --platform linux/amd64 -t counter-service .
+docker run -d -p 8080:8080 counter-service
 ```
 
 ## Infrastructure
 
-The entire AWS infrastructure is managed with Terraform, located in the `terraform/` directory.
+All AWS infrastructure is managed with **Terraform** (`terraform/` directory).
 
-### What gets provisioned
+### Resources provisioned
 
-- **VPC** with 2 public subnets across 2 Availability Zones, internet gateway, and route tables.
-- **EKS cluster** (Kubernetes 1.35) with `STANDARD` update policy, as required by the provided AWS account.
-- **Managed node group** — 2 `t3.medium` nodes spread across both AZs for high availability.
-- **ECR repository** — private Docker registry with image scanning enabled and a lifecycle policy that keeps only the last 10 images.
-- **EBS encryption by default** — all new EBS volumes (node disks and PersistentVolumes) are automatically encrypted.
+- **VPC** — 2 public subnets across 2 Availability Zones (eu-west-2a, eu-west-2b), internet gateway, route tables.
+- **EKS cluster** (Kubernetes 1.35) — `STANDARD` support policy. Includes OIDC provider and EBS CSI driver addon.
+- **Managed node group** — 2 `t3.medium` nodes spread across both AZs.
+- **ECR repository** — private registry with image scanning on push and lifecycle policy (keeps last 10 images).
+- **EBS encryption by default** — all new volumes in the region are encrypted automatically.
 
-### Provisioning the cluster
+### Provision and connect
 
 ```bash
-# Prerequisites: AWS CLI and Terraform installed, AWS credentials configured
-aws configure   # enter credentials, region: eu-west-2
-
 cd terraform
-terraform init    # download provider plugins
-terraform plan    # review what will be created
-terraform apply   # create the infrastructure (~15 min for EKS)
+terraform init
+terraform plan
+terraform apply       # ~15 minutes
 
-# Configure kubectl to talk to the new cluster
-aws eks update-kubeconfig --name counter-service-cluster --region eu-west-2
-kubectl get nodes   # verify: should show 2 nodes in Ready state
+aws eks update-kubeconfig --name guy-counter-service --region eu-west-2
+kubectl get nodes     # 2 nodes, Ready
 ```
-
-### Credentials and secrets
-
-- AWS credentials are configured via `aws configure` or environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
-- Credentials are never stored in code or committed to git. The `.gitignore` excludes `*.tfvars` and `*.tfstate` files.
-- For CI/CD, AWS credentials are stored as GitHub Actions secrets (see [CI/CD](#cicd) section).
 
 ### Tear down
 
 ```bash
-cd terraform
-terraform destroy   # removes all AWS resources
+terraform destroy
 ```
 
-## CI/CD
+### Credentials
 
-The project uses a GitHub Actions pipeline defined in `.github/workflows/ci-cd.yaml`. The pipeline is triggered on every push to `main` and on pull requests.
+- AWS credentials via `aws configure` or environment variables. Never stored in code.
+- `.gitignore` excludes `*.tfvars` and `*.tfstate`.
+- CI/CD credentials stored as GitHub Actions encrypted secrets.
 
-### Pipeline flow
+## Deployment (Helm)
 
-**On pull requests:** CI only — runs tests to validate the change before merging.
+The application is packaged as a Helm chart (`helm/counter-service/`).
 
-**On push to main:** Full CI/CD:
+### What gets deployed
 
-1. **Test** — installs dependencies and runs the pytest suite.
-2. **Build** — builds the Docker image for linux/amd64.
-3. **Push** — pushes the image to ECR with two tags: the git commit SHA (for traceability) and `latest`.
-4. **Deploy** — runs `helm upgrade --install` to deploy to the `prod` namespace on EKS.
-5. **Verify** — waits for the rollout to complete and prints pod/service status.
+| Resource | Purpose |
+|----------|---------|
+| Namespace (`prod`) | Isolates workloads |
+| Deployment (2 replicas) | Runs the counter service |
+| Service (LoadBalancer) | Exposes on port 80 |
+| Redis Deployment + Service | Shared state for the counter |
+| HorizontalPodAutoscaler | Scales 2–5 pods on CPU |
+| PodDisruptionBudget | Keeps ≥1 pod during disruptions |
+| ServiceAccount | Scoped identity for pods |
+| StorageClass (gp3-encrypted) | Available for encrypted PVCs |
 
-Each deployment uses the git commit SHA as the image tag, so every deploy is traceable back to a specific commit. Rolling back is as simple as reverting the commit — the pipeline will redeploy the previous image.
-
-### Setting up the pipeline
-
-1. In your GitHub repository, go to **Settings → Secrets and variables → Actions**.
-2. Add two repository secrets:
-   - `AWS_ACCESS_KEY_ID`
-   - `AWS_SECRET_ACCESS_KEY`
-3. Push to `main` — the pipeline runs automatically.
-
-### Rollback strategy
-
-The Helm release keeps history of previous deployments. To rollback manually:
+### Deploy manually
 
 ```bash
-helm rollback counter-service 1    # roll back to revision 1
+helm upgrade --install counter-service ./helm/counter-service \
+  --set image.repository=<ECR_URL>
 ```
 
-To rollback via CI/CD, revert the commit in git and push — the pipeline will redeploy the previous version.
-
-## Quick Start
-
-### Run locally
+### Rollback
 
 ```bash
+helm history counter-service
+helm rollback counter-service <revision>
+```
+
+## CI/CD Pipeline
+
+Defined in `.github/workflows/ci-cd.yaml`. Triggered on every push to `main`.
+
+### Flow
+
+```
+Push to main → Test (pytest) → Build image → Push to ECR → Deploy to EKS → Verify rollout
+```
+
+- **Pull requests:** CI only (test). No build or deploy.
+- **Push to main:** Full CI/CD. Image tagged with git commit SHA for traceability.
+- **Rollback via git:** revert the commit, push — pipeline redeploys the previous version.
+
+### Setup
+
+1. Go to repo **Settings → Secrets and variables → Actions**.
+2. Add `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+3. Push to `main` — pipeline runs automatically.
+
+## Persistence — Approach and Trade-offs
+
+The persistence approach evolved during the project.
+
+**Initial approach: file with PVC.** The first implementation persisted the counter to a JSON file backed by an encrypted EBS PersistentVolumeClaim (gp3). This worked correctly for a single-replica deployment — the counter survived pod restarts because the EBS volume is independent of the pod lifecycle.
+
+**The limitation:** when scaling to 2 replicas for HA, each pod would need its own PVC, resulting in independent counters. Multiple gunicorn workers within a pod had the same issue — each maintained its own in-memory counter. The service returned inconsistent values depending on which pod or worker handled the request.
+
+**Current approach: Redis.** All pods connect to a single Redis instance. `redis.incr()` is atomic, so concurrent requests from multiple pods and workers are safe without application-level locking. Every GET returns the same value regardless of which pod handles it.
+
+**Trade-off:** If the Redis pod restarts, the counter resets to 0 (in-memory only). For production, this could be addressed with Redis AOF/RDB persistence or AWS ElastiCache.
+
+**Other approaches considered:**
+
+- **DynamoDB / RDS** — most durable, but overkill for a counter. Adds latency, cost, and infrastructure.
+- **EFS (ReadWriteMany)** — shared filesystem, but concurrent writes need file locking. Higher latency than EBS.
+
+## High Availability and Scaling
+
+- **2 replicas** with shared state via Redis — if one pod dies, the other serves traffic while Kubernetes replaces it.
+- **HPA** — auto-scales from 2 to 5 pods based on CPU (70% threshold).
+- **PDB** — guarantees ≥1 pod available during voluntary disruptions (node drains, upgrades).
+- **Pod anti-affinity** — prefers scheduling replicas on different nodes, spreading across AZs.
+- **Multi-AZ nodes** — 2 worker nodes in eu-west-2a and eu-west-2b.
+
+## Security
+
+- **Non-root container** — runs as `appuser` (UID 1000).
+- **Read-only root filesystem** — only `/tmp` (emptyDir) and `/data` (if PVC enabled) are writable.
+- **No hardcoded secrets** — AWS credentials in GitHub Actions secrets, never in code.
+- **Encrypted storage** — EBS encryption enabled by default across the region.
+- **Minimal image** — multi-stage build, slim base, no build tools in final image.
+- **Image scanning** — ECR scans images for vulnerabilities on push.
+- **RBAC** — dedicated ServiceAccount for the counter service pods.
+
+## Observability
+
+- **Structured JSON logging** — all logs emitted as JSON to stdout, parseable by CloudWatch, Loki, ELK.
+- **Prometheus metrics** — `/metrics` exposes `http_requests_total` (by method/endpoint/status) and `counter_current_value`.
+- **Health probes** — Kubernetes monitors `/healthz` (liveness) and `/readyz` (readiness, checks Redis connectivity).
+
+## Quick Start (Local)
+
+```bash
+# Run tests (no Redis required — uses fakeredis)
 pip install -r requirements.txt
-COUNTER_FILE=/tmp/counter.json python app.py
-```
-
-### Test
-
-```bash
-# Run the test suite
 pytest test_app.py -v
 
-# Manual testing
-curl http://localhost:8080/          # GET  — view counter
-curl -X POST http://localhost:8080/  # POST — increment counter
-curl http://localhost:8080/healthz   # Health check
-curl http://localhost:8080/readyz    # Readiness check
-curl http://localhost:8080/metrics   # Prometheus metrics
+# Run locally (requires a Redis instance on localhost:6379)
+python app.py
+
+# Test
+curl http://localhost:8080/
+curl -X POST http://localhost:8080/
 ```
 
-## Production considerations
+## Production Considerations
 
-If this service were to run in a real production environment, the following improvements would be recommended:
-
-- **Private subnets with NAT Gateway** — worker nodes are currently in public subnets for simplicity. In production, nodes should be in private subnets with a NAT Gateway for outbound internet access, reducing the attack surface.
-- **Remote Terraform state** — state is currently stored locally. In a team environment, state should be stored in an S3 bucket with DynamoDB locking to enable collaboration and prevent conflicts.
-- **Redis for persistence** — replacing file-based persistence with Redis would enable multiple replicas with shared state, achieving true high availability with consistent counting.
-- **Sealed Secrets or External Secrets** — AWS credentials in GitHub Actions secrets work, but for production, a solution like AWS Secrets Manager with External Secrets Operator or Sealed Secrets provides better audit trails and rotation.
-- **Canary deployments** — the current rolling update strategy could be enhanced with canary or blue-green deployments using tools like Argo Rollouts, allowing gradual traffic shifts and automated rollback on errors.
-- **Grafana dashboard** — the Prometheus metrics endpoint is exposed and ready for scraping. Adding a Prometheus server and Grafana dashboard would provide visibility into request rates, counter values, and error rates.
+- **Private subnets with NAT Gateway** — nodes are in public subnets for simplicity. Production should use private subnets.
+- **Redis persistence** — current Redis is in-memory only. Enable AOF/RDB with a PVC, or use AWS ElastiCache.
+- **Sealed Secrets / External Secrets** — for better secret management, audit trails, and rotation.
+- **Canary deployments** — enhance the rolling update strategy with Argo Rollouts for gradual traffic shifts.
+- **Grafana dashboard** — Prometheus metrics are exposed and ready for scraping and visualization.
+- **Distributed tracing** — for a single-service API with one Redis call, tracing adds limited value. In a microservices architecture, OpenTelemetry would help identify cross-service latency bottlenecks.

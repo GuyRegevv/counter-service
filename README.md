@@ -6,7 +6,7 @@ A lightweight Python-based HTTP counter service deployed on EKS with a fully aut
 
 ## Architecture
 
-![Architecture](docs/architecture.svg)
+![Architecture](docs/architecture.png)
 
 ## Table of Contents
 
